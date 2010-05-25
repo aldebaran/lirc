@@ -2,6 +2,7 @@
 
 /*
  * Remote control driver for I2C-attached devices from userspace
+ * Nao's Head IR driver
  *
  * Copyright 2006, 2007 Adam Sampson <ats@offog.org>
  *
@@ -52,47 +53,65 @@
 #include <dirent.h>
 #include <time.h>
 #include <signal.h>
-#include <linux/i2c-dev.h>
+
+#include <sys/ipc.h>
+#include <sys/shm.h>
+#define SHMSZ     27
+
+//#include <linux/i2c-dev.h>
+
 #ifndef I2C_SLAVE /* hack */
-#include <linux/i2c.h>
+//#include <linux/i2c.h>
 #endif
 
 #include "hardware.h"
 #include "ir_remote.h"
 #include "lircd.h"
 #include "receive.h"
+#include "transmit.h"
+
+#include "i2c-dev.h"
 
 /* The number of bits and bytes in a code. */
-#define CODE_SIZE_BITS 13
-#define CODE_SIZE 2
+#define CODE_SIZE_BITS 25
+#define CODE_SIZE 4
 
 /* The I2C address of the device to use. */
-#define IR_ADDR 0x1a
+#define IR_ADDR 8
+#define REGISTER 0x44
 
-/* The time that a key must be held down before it repeats (in seconds). */
-#define REPEAT_TIME 0.3
+#define REGISTER_PS_TO_EMIT_COUNT 230
+#define REGISTER_PS_TO_EMIT_INFO 231
+#define REGISTER_PS_TO_EMIT_0 50
+
+#define REGISTER_PS_PICKED_UP_COUNT 225
+#define REGISTER_PS_PICKED_UP_INFO 226
+#define REGISTER_PS_PICKED_UP_0 50
+
 
 static int i2cuser_init(void);
 static int i2cuser_deinit(void);
 static void i2cuser_read_loop(int fd);
 static char *i2cuser_rec(struct ir_remote *remotes);
+static lirc_t i2cuser_readdata(lirc_t timeout);
+int i2cuser_send(struct ir_remote *remote,struct ir_ncode *code);
 
 struct hardware hw_i2cuser = {
-	NULL,                   /* determine device by probing */
-	-1,                     /* fd */
-	LIRC_CAN_REC_LIRCCODE,  /* features */
-	0,                      /* send_mode */
-	LIRC_MODE_LIRCCODE,     /* rec_mode */
-	CODE_SIZE_BITS,         /* code_length */
-	i2cuser_init,           /* init_func */
-	NULL,                   /* config_func */
-	i2cuser_deinit,         /* deinit_func */
-	NULL,                   /* send_func */
-	i2cuser_rec,            /* rec_func */
-	receive_decode,         /* decode_func */
-	NULL,                   /* ioctl_func */
-	NULL,
-	"i2cuser"
+  NULL,                   /* determine device by probing */
+  -1,                     /* fd */
+  LIRC_CAN_REC_MODE2,  /* features */
+  LIRC_CAN_SEND_MODE2, /* send_mode */
+  LIRC_MODE_MODE2,     /* rec_mode */
+  CODE_SIZE_BITS,         /* code_length */
+  i2cuser_init,           /* init_func */
+  NULL,                   /* config_func */
+  i2cuser_deinit,         /* deinit_func */
+  i2cuser_send,                   /* send_func */
+  i2cuser_rec,            /* rec_func */
+  receive_decode,         /* decode_func */
+  NULL,                   /* ioctl_func */
+  i2cuser_readdata,
+  "i2cuser"
 };
 
 /* FD of the i2c device. Since it's not selectable, we give the lircd core a
@@ -105,196 +124,314 @@ static pid_t child = -1;
 
 /* Hunt for the appropriate i2c device and open it. */
 static int open_i2c_device(void) {
-	const char *adapter_dir = "/sys/class/i2c-adapter";
-	DIR *dir;
-	int found;
-
-	dir = opendir(adapter_dir);
-	if (dir == NULL) {
-		logprintf(LOG_ERR, "Cannot list i2c-adapter dir %s",
-		          adapter_dir);
-		return -1;
-	}
-	found = -1;
-
-	while (1) {
-		char s[256];
-		FILE *f;
-		struct dirent *de;
-
-		de = readdir(dir);
-		if (de == NULL)
-			break;
-		if (de->d_name[0] == '.')
-			continue;
-
-		/* Kernels 2.6.22 and later had the name here: */
-		snprintf(s, sizeof s, "%s/%s/name",
-			 adapter_dir, de->d_name);
-		
-		f = fopen(s, "r");
-		if (f == NULL) {
-			/* ... and kernels prior to 2.6.22 have it here: */
-			snprintf(s, sizeof s, "%s/%s/device/name",
-				 adapter_dir, de->d_name);
-
-			f = fopen(s, "r");
-		}
-		if (f == NULL) {
-			logprintf(LOG_ERR, "Cannot open i2c name file %s", s);
-			return -1;
-		}
-		memset(s, 0, sizeof s);
-		fread(s, 1, sizeof s, f);
-		fclose(f);
-
-		if (strncmp(s, "bt878", 5) == 0) {
-			if (strncmp(de->d_name, "i2c-", 4) != 0) {
-				logprintf(LOG_ERR, "i2c adapter dir %s "
-				          "has unexpected name", de->d_name);
-				return -1;
-			}
-			found = atoi(de->d_name + 4);
-			break;
-		}
-	}
-
-	closedir(dir);
-	if (found == -1) {
-		logprintf(LOG_ERR, "Cannot find i2c adapter");
-		return -1;
-	}
-
-	snprintf(device_name, sizeof device_name, "/dev/i2c-%d", found);
-	logprintf(LOG_INFO, "Using i2c device %s", device_name);
-	hw.device = device_name;
-	return open(device_name, O_RDWR);
+  int found=0;
+  snprintf(device_name, sizeof device_name, "/dev/i2c-%d", found);
+  logprintf(LOG_INFO, "Using i2c device %s", device_name);
+  hw.device = device_name;
+  return open(device_name, O_RDWR);
 }
 
 static int i2cuser_init(void) {
-	int pipe_fd[2] = { -1, -1 };
+  int pipe_fd[2] = { -1, -1 };
 
-	if (pipe(pipe_fd) != 0) {
-		logprintf(LOG_ERR, "Couldn't open pipe: %s", strerror(errno));
-		return 0;
-	}
-	hw.fd = pipe_fd[0];
+  if (pipe(pipe_fd) != 0) {
+    logprintf(LOG_ERR, "Couldn't open pipe: %s", strerror(errno));
+    return 0;
+  }
+  hw.fd = pipe_fd[0];
 
-	i2c_fd = open_i2c_device();
-	if (i2c_fd == -1) {
-		logprintf(LOG_ERR, "i2c device cannot be opened");
-		goto fail;
-	}
+  i2c_fd = open_i2c_device();
+  if (i2c_fd == -1) {
+    logprintf(LOG_ERR, "i2c device cannot be opened");
+    goto fail;
+  }
 
-	if (ioctl(i2c_fd, I2C_SLAVE, IR_ADDR) < 0) {
-		logprintf(LOG_ERR, "Cannot set i2c address %02x", IR_ADDR);
-		goto fail;
-	}
+  if (ioctl(i2c_fd, I2C_SLAVE, IR_ADDR) < 0) {
+    logprintf(LOG_ERR, "Cannot set i2c address %02x", IR_ADDR);
+    goto fail;
+  }
 
-	child = fork();
-	if (child == -1) {
-		logprintf(LOG_ERR, "Cannot fork child process: %s",
-		          strerror(errno));
-		goto fail;
-	} else if (child == 0) {
-		close(pipe_fd[0]);
-		i2cuser_read_loop(pipe_fd[1]);
-	}
-	close(pipe_fd[1]);
+  child = fork();
+  if (child == -1) {
+    logprintf(LOG_ERR, "Cannot fork child process: %s",
+              strerror(errno));
+    goto fail;
+  } else if (child == 0) {
+    close(pipe_fd[0]);
+    i2cuser_read_loop(pipe_fd[1]);
+  }
+  close(pipe_fd[1]);
 
-	logprintf(LOG_INFO, "i2cuser driver: i2c device found and ready to go");
-	return 1;
+  logprintf(LOG_INFO, "i2cuser driver: i2c device found and ready to go");
+  return 1;
 
 fail:
-	if (i2c_fd != -1)
-		close(i2c_fd);
-	if (pipe_fd[0] != -1)
-		close(pipe_fd[0]);
-	if (pipe_fd[1] != -1)
-		close(pipe_fd[1]);
-	return 0;
+  if (i2c_fd != -1)
+    close(i2c_fd);
+  if (pipe_fd[0] != -1)
+    close(pipe_fd[0]);
+  if (pipe_fd[1] != -1)
+    close(pipe_fd[1]);
+  return 0;
 }
 
 static int i2cuser_deinit(void) {
-	if (child != -1) {
-		if (kill(child, SIGTERM) == -1)
-			return 0;
-		if (waitpid(child, NULL, 0) == 0)
-			return 0;
-	}
-	if (i2c_fd != -1)
-		close(i2c_fd);
-	if (hw.fd != -1)
-		close(hw.fd);
-	return 1;
+  if (child != -1) {
+    if (kill(child, SIGTERM) == -1)
+      return 0;
+    if (waitpid(child, NULL, 0) == 0)
+      return 0;
+  }
+  if (i2c_fd != -1)
+    close(i2c_fd);
+  if (hw.fd != -1)
+    close(hw.fd);
+  return 1;
 }
+
 
 static void i2cuser_read_loop(int out_fd) {
-	ir_code last_code = 0;
-	double last_time = 0.0;
+  unsigned char codeBuf[CODE_SIZE];
+  unsigned long int lastTime = 0, timeValue,error=0;
+  unsigned int count=0, state=0, info=0, count32=0, d_count=0;
+  int i, ret;
+  char resetcount[1];
+  resetcount[0] = 0;
+  unsigned int delay_polling = 50000;
+  //FILE *f1;
+  //f1=fopen("pulselog","a+");
+  //char bufx[128] = "test wouahou !!!\n";
 
-	alarm(0);
-	signal(SIGTERM, SIG_DFL);
-	signal(SIGPIPE, SIG_DFL);
-	signal(SIGINT, SIG_DFL);
-	signal(SIGHUP, SIG_IGN);
-	signal(SIGALRM, SIG_IGN);
+  unsigned char values[32], command = REGISTER;
+  alarm(0);
+  signal(SIGTERM, SIG_DFL);
+  signal(SIGPIPE, SIG_DFL);
+  signal(SIGINT, SIG_DFL);
+  signal(SIGHUP, SIG_IGN);
+  signal(SIGALRM, SIG_IGN);
 
-	for (;;) {
-		unsigned char buf[3], code_buf[CODE_SIZE];
-		int rc, i;
-		ir_code new_code;
-		struct timeval tv;
-		double new_time;
 
-		do {
-			/* Poll 20 times per second. */
-			struct timespec ts = {0, 50000000};
-			nanosleep(&ts, NULL);
+  char ch_irSide[2] = "8";
 
-			rc = read(i2c_fd, &buf, sizeof buf);
-			if (rc < 0 && errno != EREMOTEIO) {
-				logprintf(LOG_ERR, "Error reading from i2c "
-				          "device: %s", strerror(errno));
-				goto fail;
-			} else if (rc != sizeof buf) {
-				continue;
-			}
-		} while ((buf[0] & 0x80) == 0);
+   int shmid;
+  key_t key;
+  char *shm_irSide;
 
-		gettimeofday(&tv, NULL);
-		new_time = tv.tv_sec + (0.000001L * tv.tv_usec);
+  /*
+   * We need to get the segment named
+   * "5678", created by the server.
+   */
+  key = KEY_SHM_IRSIDE;
 
-		new_code = ((buf[0] & 0x7f) << 6) | (buf[1] >> 2);
-		if (new_code == last_code) {
-			/* Same code as last time -- so we need to see whether
-			   it should be repeated or not. (The Hauppauge remote
-			   control will send a different code if you release
-			   and press the same key.) */
-			if (new_time - last_time < REPEAT_TIME)
-				continue;
-		}
+  /*
+   * Locate the segment.
+   */
+  if ((shmid = shmget(key, SHMSZ, 0666)) < 0) {
+      perror("shmget");
+      exit(1);
+  }
 
-		logprintf(LOG_INFO, "Read input code: %08x", new_code);
-		last_time = new_time;
-		last_code = new_code;
+  /*
+   * Now we attach the segment to our data space.
+   */
+  if ((shm_irSide = shmat(shmid, NULL, 0)) == (char *) -1) {
+      perror("shmat");
+      exit(1);
+  }
 
-		for (i = 0; i < CODE_SIZE; i++) {
-			code_buf[(CODE_SIZE - 1) - i] = new_code & 0xFF;
-			new_code >>= 8;
-		}
-		if (write(out_fd, code_buf, CODE_SIZE) != CODE_SIZE) {
-			logprintf(LOG_ERR, "Write to i2cuser pipe failed: %s",
-			          strerror(errno));
-			goto fail;
-		}
-	}
 
-fail:
-	_exit(1);
+
+
+  //i2c_smbus_write_block_data(i2c_fd, REGISTER_PS_PICKED_UP_COUNT, 1, &(resetcount[0])); //Avoid receiving previous values from buffers
+
+  for (;;) {
+
+    if(count==0) usleep(50000);
+    else usleep(10000);
+
+    count = i2c_smbus_read_byte_data(i2c_fd, REGISTER_PS_PICKED_UP_COUNT);
+    count32=count;
+    d_count=0;
+
+    for (;;) {
+
+      if(count32==0)break;
+
+      info = i2c_smbus_read_byte_data(i2c_fd, REGISTER_PS_PICKED_UP_INFO);
+
+      //first we have to read the informational byt
+      //if(count32 == count)
+      //{
+        if(info&0x10) state=1;
+        else state=0;
+      //}
+
+      
+
+      if(count32<=32)
+      {
+        i2c_smbus_read_i2c_block_data(i2c_fd, REGISTER_PS_PICKED_UP_0 + d_count, count32, &(values[d_count]));
+        
+        if((info!=255) && (values[0]!=0)){  //
+          *shm_irSide = info>>5;
+          info=255;        
+        } 
+      }
+      else
+      {
+        i2c_smbus_read_i2c_block_data(i2c_fd, REGISTER_PS_PICKED_UP_0 + d_count, 32, &(values[d_count]));
+      }
+      
+      //logprintf(LOG_INFO, "DCOUNT: %ud / COUNT32: %ud / COUNT: %ud",d_count,count32, count);
+      for(i=0;i<count32;i++){
+        //logprintf(LOG_INFO, "INDICE1: %d; VAL: %d",i,values[i]);
+        if(values[i]==0){
+          lastTime=lastTime+8160;
+        }else{
+          //logprintf(LOG_INFO, "INDICE2: %d",i);
+          //if((i==0) && (d_count==0)) timeValue=200000;
+          //else 
+          timeValue=lastTime+(unsigned long int)values[i]*32;
+          codeBuf[0]= timeValue & 0xFF;
+          codeBuf[1]= (timeValue & 0xFF00)>>8;
+          codeBuf[2]= (timeValue & 0xFF0000)>>16;
+          codeBuf[3]= state;//to save if it is a pulse or a duration
+          if (write(out_fd, codeBuf, CODE_SIZE) != CODE_SIZE) {//write on pipe
+            logprintf(LOG_ERR, "Write to i2cuser pipe failed: %s",
+                      strerror(errno));
+            goto fail;
+          }
+
+          error++;
+          lastTime=0;
+          if(state==1)state=0;
+          else state=1;
+        }
+        if(error>128)break;
+      }
+
+      if(error>128)break;
+      if(count32<=32)
+      {
+        count32=0;
+        break;
+      }
+      else count32 -=32;
+      d_count = count-count32;
+      
+    }
+    error=0;
+    if(count!=0) i2c_smbus_write_block_data(i2c_fd, REGISTER_PS_PICKED_UP_COUNT, 1, &(resetcount[0]));
+  }
+  //fclose(f1);
+  fail:
+  _exit(1);
 }
 
+
 static char *i2cuser_rec(struct ir_remote *remotes) {
-	if (!clear_rec_buffer()) return NULL;
-	return decode_all(remotes);
+  logprintf(LOG_INFO, "i2cuser_rec");
+  if (!clear_rec_buffer()) return NULL;
+  return decode_all(remotes);
+}
+
+static lirc_t i2cuser_readdata(lirc_t timeout)
+{
+  int n;
+  lirc_t res = 0;
+
+  while(res==0){
+    if (!waitfordata(timeout))
+    {
+      res= 0;
+    }
+    n = read(hw.fd, &res, CODE_SIZE);
+    if (n != CODE_SIZE)
+    {
+      res = 0;
+    }
+  }
+  return(res);
+}
+
+int i2cuser_send(struct ir_remote *remote,struct ir_ncode *code){
+  int length, x=0,i, ret, sent=0, sent_confirmed=0;// lengthI2C=0;
+  lirc_t *signals,val=0,pulseState=0;
+
+  unsigned char values[34], command = REGISTER;
+  unsigned char values_init[5];
+
+  if(!init_send(remote,code)) {
+    return 0;
+  }
+
+  length = send_buffer.wptr;//longueur totale
+  signals = send_buffer.data;
+
+
+  values_init[0] = REGISTER_PS_TO_EMIT_COUNT;
+  values_init[1] = 2;
+  values_init[2] = length;
+
+
+  for(;;){
+
+    sent_confirmed = sent;
+
+    //fill array to send
+    for(i=0;(i<32)&&(x<(sent+length));i++){//parcourir tableau à envoyer
+      if(val==0){
+        val = (signals[x]&PULSE_MASK);
+        if(pulseState==0) pulseState=1;
+        else pulseState=0;
+        //logprintf(LOG_INFO, "pulse to send=  %d", val);
+      }
+
+      if(i==0){
+            if(pulseState) values_init[3]=0x10;//information byte
+            else values_init[3]=0x00;
+      }
+
+
+      if(val>8160){//time out à envoyer
+        values[2+i]=0;
+        val = val-8160;
+        values_init[2]++;
+      }else{
+        values[2+i]=val/32;//valeur inférieure a 8160 ms
+        if((val%32)>16) values[2+i] += 1;
+        val=0;
+        x++;
+        length--;
+        sent++;
+      }
+      logprintf(LOG_INFO, "pulse to send=  %d", values[2+i]);
+    }
+
+    values[1]=i;
+
+    logprintf(LOG_INFO, "x=  %d, sent+length= %d", x,sent+length);
+    if(x<(sent+length))
+      values_init[3]=values_init[3] | 0x1;
+
+
+
+    //logprintf(LOG_INFO, "Send Count + Info bytes");
+    //ret=write(i2c_fd,values_init,values_init[1]+2);
+    //if(ret== -1) return 0;
+
+    i2c_smbus_write_block_data(i2c_fd, values_init[0], values_init[1], &(values_init[2]));
+
+    //logprintf(LOG_INFO, "Send Data");
+    values[0] = REGISTER_PS_TO_EMIT_0 + sent_confirmed;
+    i2c_smbus_write_block_data(i2c_fd, values[0], values[1], &(values[2]));
+
+    //for(i=0;i<values[1]+2;i++){
+      //logprintf(LOG_INFO, "val[%d]=%d",i,values[i]);
+    //}
+
+
+    if(x>=(sent+length)) break;
+  }
+  return 1;
 }

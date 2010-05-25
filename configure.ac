@@ -562,7 +562,7 @@ if test "$driver" = "userspace" -o "$driver" = "all"; then
 		ftdi_lib="-lftdi"
 		;;
 	i2cuser)
-		hw_module="${hw_module} hw_i2cuser.o receive.o"
+		hw_module="${hw_module} hw_i2cuser.o receive.o transmit.o" 
 		;;
 	iguanaIR)
 		hw_module="${hw_module} hw_iguanaIR.o transmit.o receive.o"
@@ -993,7 +993,7 @@ fi
 
 if test "$driver" = "i2cuser"; then
   lirc_driver="none"
-  hw_module="hw_i2cuser.o receive.o"
+  hw_module="hw_i2cuser.o receive.o transmit.o"
   HW_DEFAULT="hw_i2cuser"
 fi
 

@@ -17,6 +17,10 @@
 
 typedef int lirc_t;
 
+#define KEY_SHM_IRSIDE 5591
+#define SHMSZ     27
+
+
 /*** lirc compatible hardware features ***/
 
 #define LIRC_MODE2SEND(x) (x)

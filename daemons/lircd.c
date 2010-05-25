@@ -57,6 +57,9 @@
 #include <fcntl.h>
 #include <sys/file.h>
 
+#include <sys/ipc.h>
+#include <sys/shm.h>
+
 #if defined(__linux__)
 #include <linux/input.h>
 #include <linux/uinput.h>
@@ -86,6 +89,8 @@
 #include "hw-types.h"
 #include "release.h"
 
+
+
 struct ir_remote *remotes;
 struct ir_remote *free_remotes=NULL;
 
@@ -110,6 +115,8 @@ static const char *syslogident = "lircd-" VERSION;
 FILE *pidf;
 char *pidfile = PIDFILE;
 char *lircdfile = LIRCD;
+
+char *shm_irSide;
 
 struct protocol_directive directives[] =
 {
@@ -1914,16 +1921,63 @@ void input_message(const char *message, const char *remote_name,
 #endif
 }
 
+//For unsing itoa
+char *strrev(char *str) {
+	char *p1, *p2;
+
+	if (!str || !*str)
+		return str;
+
+	for (p1 = str, p2 = str + strlen(str) - 1; p2 > p1; ++p1, --p2) {
+		*p1 ^= *p2;
+		*p2 ^= *p1;
+		*p1 ^= *p2;
+	}
+
+	return str;
+}
+
+//To convert irSide in string
+char *itoa(int n, char *s, int b) {
+	static char digits[] = "0123456789abcdefghijklmnopqrstuvwxyz";
+	int i=0, sign;
+    
+	if ((sign = n) < 0)
+		n = -n;
+
+	do {
+		s[i++] = digits[n % b];
+	} while ((n /= b) > 0);
+
+	if (sign < 0)
+		s[i++] = '-';
+	s[i] = '\0';
+
+	return strrev(s);
+}
+
 void broadcast_message(const char *message)
 {
 	int len,i;
-	
-	len=strlen(message);
+  char bufirSide[2];
+  char bufmsg[90];
+  int num_irSide;
+
+  strcpy(bufmsg, message);
+  itoa(*shm_irSide, bufirSide, 10);
+  len=strlen(bufmsg);
+  strncpy(bufmsg, bufmsg, len-1);
+  bufmsg[len-1] = '\0';
+  strcat(bufmsg, " ");
+  strcat(bufmsg, bufirSide);
+  strcat(bufmsg, "\n");
+	len=strlen(bufmsg)+1;
+
 	
 	for (i=0; i<clin; i++)
 	{
 		LOGPRINTF(1,"writing to client %d",i);
-		if(write_socket(clis[i],message,len)<len)
+		if(write_socket(clis[i],bufmsg,len)<len)
 		{
 			remove_client(clis[i]);
 			i--;
@@ -2218,6 +2272,34 @@ int main(int argc,char **argv)
 	int nodaemon=0;
 	mode_t permission=S_IRUSR|S_IWUSR|S_IRGRP|S_IWGRP|S_IROTH|S_IWOTH;
 	char *device=NULL;
+
+
+  int shmid;
+  key_t key;
+  
+
+  /*
+   * We'll name our shared memory segment
+   */
+  key = KEY_SHM_IRSIDE;
+
+  /*
+   * Create the segment.
+   */
+  if ((shmid = shmget(key, SHMSZ, IPC_CREAT | 0666)) < 0) {
+      perror("shmget");
+      exit(1);
+  }
+
+  /*
+   * Now we attach the segment to our data space.
+   */
+  if ((shm_irSide = shmat(shmid, NULL, 0)) == (char *) -1) {
+      perror("shmat");
+      exit(1);
+  }
+
+  *shm_irSide = 3;
 
 	address.s_addr = htonl(INADDR_ANY);
 	hw_choose_driver(NULL);

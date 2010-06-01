@@ -58,7 +58,6 @@
 #include <sys/shm.h>
 #define SHMSZ     27
 
-//#include <linux/i2c-dev.h>
 
 #ifndef I2C_SLAVE /* hack */
 //#include <linux/i2c.h>
@@ -70,6 +69,7 @@
 #include "receive.h"
 #include "transmit.h"
 
+//#include <linux/i2c-dev.h>
 #include "i2c-dev.h"
 
 /* The number of bits and bytes in a code. */
@@ -202,7 +202,7 @@ static void i2cuser_read_loop(int out_fd) {
   //f1=fopen("pulselog","a+");
   //char bufx[128] = "test wouahou !!!\n";
 
-  unsigned char values[32], command = REGISTER;
+  unsigned char values[128], command = REGISTER;
   alarm(0);
   signal(SIGTERM, SIG_DFL);
   signal(SIGPIPE, SIG_DFL);
@@ -253,6 +253,8 @@ static void i2cuser_read_loop(int out_fd) {
     count32=count;
     d_count=0;
 
+    lastTime=0;
+
     for (;;) {
 
       if(count32==0)break;
@@ -266,31 +268,31 @@ static void i2cuser_read_loop(int out_fd) {
         else state=0;
       //}
 
-      
+
 
       if(count32<=32)
       {
         i2c_smbus_read_i2c_block_data(i2c_fd, REGISTER_PS_PICKED_UP_0 + d_count, count32, &(values[d_count]));
-        
+
         if((info!=255) && (values[0]!=0)){  //
           *shm_irSide = info>>5;
-          info=255;        
-        } 
+          info=255;
+        }
       }
       else
       {
         i2c_smbus_read_i2c_block_data(i2c_fd, REGISTER_PS_PICKED_UP_0 + d_count, 32, &(values[d_count]));
       }
-      
+
       //logprintf(LOG_INFO, "DCOUNT: %ud / COUNT32: %ud / COUNT: %ud",d_count,count32, count);
-      for(i=0;i<count32;i++){
-        //logprintf(LOG_INFO, "INDICE1: %d; VAL: %d",i,values[i]);
+      for(i=d_count; i<((d_count+32)>count ? count:d_count+32); i++){
+        //logprintf(LOG_INFO, "&@&@&@&@&@  INDICE1: %d; VAL: %d",i,values[i]);
         if(values[i]==0){
           lastTime=lastTime+8160;
         }else{
           //logprintf(LOG_INFO, "INDICE2: %d",i);
           //if((i==0) && (d_count==0)) timeValue=200000;
-          //else 
+          //else
           timeValue=lastTime+(unsigned long int)values[i]*32;
           codeBuf[0]= timeValue & 0xFF;
           codeBuf[1]= (timeValue & 0xFF00)>>8;
@@ -303,7 +305,7 @@ static void i2cuser_read_loop(int out_fd) {
           }
 
           error++;
-          lastTime=0;
+          
           if(state==1)state=0;
           else state=1;
         }
@@ -318,7 +320,7 @@ static void i2cuser_read_loop(int out_fd) {
       }
       else count32 -=32;
       d_count = count-count32;
-      
+
     }
     error=0;
     if(count!=0) i2c_smbus_write_block_data(i2c_fd, REGISTER_PS_PICKED_UP_COUNT, 1, &(resetcount[0]));
@@ -356,7 +358,7 @@ static lirc_t i2cuser_readdata(lirc_t timeout)
 
 int i2cuser_send(struct ir_remote *remote,struct ir_ncode *code){
   int length, x=0,i, ret, sent=0, sent_confirmed=0;// lengthI2C=0;
-  lirc_t *signals,val=0,pulseState=0;
+  lirc_t *signals,val=0,pulseState=1;
 
   unsigned char values[34], command = REGISTER;
   unsigned char values_init[5];
@@ -382,9 +384,6 @@ int i2cuser_send(struct ir_remote *remote,struct ir_ncode *code){
     for(i=0;(i<32)&&(x<(sent+length));i++){//parcourir tableau à envoyer
       if(val==0){
         val = (signals[x]&PULSE_MASK);
-        if(pulseState==0) pulseState=1;
-        else pulseState=0;
-        //logprintf(LOG_INFO, "pulse to send=  %d", val);
       }
 
       if(i==0){
@@ -415,21 +414,12 @@ int i2cuser_send(struct ir_remote *remote,struct ir_ncode *code){
       values_init[3]=values_init[3] | 0x1;
 
 
-
-    //logprintf(LOG_INFO, "Send Count + Info bytes");
-    //ret=write(i2c_fd,values_init,values_init[1]+2);
-    //if(ret== -1) return 0;
-
     i2c_smbus_write_block_data(i2c_fd, values_init[0], values_init[1], &(values_init[2]));
 
     //logprintf(LOG_INFO, "Send Data");
+    if(sent_confirmed>0) sent_confirmed +=1;
     values[0] = REGISTER_PS_TO_EMIT_0 + sent_confirmed;
     i2c_smbus_write_block_data(i2c_fd, values[0], values[1], &(values[2]));
-
-    //for(i=0;i<values[1]+2;i++){
-      //logprintf(LOG_INFO, "val[%d]=%d",i,values[i]);
-    //}
-
 
     if(x>=(sent+length)) break;
   }

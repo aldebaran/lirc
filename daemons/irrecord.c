@@ -160,6 +160,7 @@ char exit_procedure=0;
 #endif
 
 
+
 struct ir_remote *emulation_data;
 struct ir_ncode *next_code = NULL;
 struct ir_ncode *current_code = NULL;
@@ -361,6 +362,50 @@ int main(int argc,char **argv)
   /* Open the second named pipe for reading */
   rdfd = open(NP2, O_RDONLY);
 #endif
+
+  char *pidfile = "/var/run/lirc/irrecord.pid";
+  int fd;
+  FILE *pidf;
+
+	/* create pid lockfile in /var/run */
+	if((fd=open(pidfile,O_RDWR|O_CREAT,0644))==-1 ||
+	   (pidf=fdopen(fd,"r+"))==NULL)
+	{
+		fprintf(stderr,"%s: can't open or create %s\n",
+			progname,pidfile);
+		perror(progname);
+		exit(EXIT_FAILURE);
+	}
+	if(flock(fd,LOCK_EX|LOCK_NB)==-1)
+	{
+		pid_t otherpid;
+		
+		if(fscanf(pidf,"%d\n",&otherpid)>0)
+		{
+			fprintf(stderr,"%s: there seems to already be "
+				"a irrecord process with pid %d\n",
+				progname,otherpid);
+			fprintf(stderr,"%s: otherwise delete stale "
+				"lockfile %s\n",progname,pidfile);
+		}
+		else
+		{
+			fprintf(stderr,"%s: invalid %s encountered\n",
+				progname,pidfile);
+		}
+		exit(EXIT_FAILURE);
+	}
+	(void) fcntl(fd,F_SETFD,FD_CLOEXEC);
+	rewind(pidf);
+	(void) fprintf(pidf,"%d\n",getpid());
+	(void) fflush(pidf);
+	(void) ftruncate(fileno(pidf),ftell(pidf));
+
+
+
+
+
+
 
   while(1)
   {

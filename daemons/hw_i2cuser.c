@@ -194,13 +194,17 @@ static void i2cuser_read_loop(int out_fd) {
   unsigned char codeBuf[CODE_SIZE];
   unsigned long int lastTime = 0, timeValue,error=0;
   unsigned int count=0, state=0, info=0, count32=0, d_count=0;
+  unsigned int count_to_reach;
   int i, ret;
   char resetcount[1];
   resetcount[0] = 0;
   unsigned int delay_polling = 50000;
-  //FILE *f1;
-  //f1=fopen("pulselog","a+");
-  //char bufx[128] = "test wouahou !!!\n";
+
+  char ch_irSide[2] = "8";
+
+  int shmid;
+  key_t key;
+  char *shm_irSide;
 
   unsigned char values[128], command = REGISTER;
   alarm(0);
@@ -210,16 +214,59 @@ static void i2cuser_read_loop(int out_fd) {
   signal(SIGHUP, SIG_IGN);
   signal(SIGALRM, SIG_IGN);
 
+  char *progname = "polling_child";
+  char *pidfile = "/var/run/lirc/polling_child.pid";
+  int fd,fdppid;
+  FILE *pidf;
+  FILE *ppidf;
 
-  char ch_irSide[2] = "8";
+  fdppid = fopen("/var/run/lirc/irrecord.pid", "r+");
 
-   int shmid;
-  key_t key;
-  char *shm_irSide;
+  if(fdppid)  // if i2cuser_read_loop is call from an irrecord fork
+  {           // write the pid of the child process in /var/run/lirc/
+              // in order to kill the process from naoqi 
+              // if the user cancel the remote record process
+
+	  /* create pid lockfile in /var/run */
+	  if((fd=open(pidfile,O_RDWR|O_CREAT,0644))==-1 ||
+	     (pidf=fdopen(fd,"r+"))==NULL)
+	  {
+		  fprintf(stderr,"%s: can't open or create %s\n",
+			  progname,pidfile);
+		  perror(progname);
+		  exit(EXIT_FAILURE);
+	  }
+	  if(flock(fd,LOCK_EX|LOCK_NB)==-1)
+	  {
+		  pid_t otherpid;
+		
+		  if(fscanf(pidf,"%d\n",&otherpid)>0)
+		  {
+			  fprintf(stderr,"%s: there seems to already be "
+				  "a lirc child process with pid %d\n",
+				  progname,otherpid);
+			  fprintf(stderr,"%s: otherwise delete stale "
+				  "lockfile %s\n",progname,pidfile);
+		  }
+		  else
+		  {
+			  fprintf(stderr,"%s: invalid %s encountered\n",
+				  progname,pidfile);
+		  }
+		  exit(EXIT_FAILURE);
+	  }
+	  (void) fcntl(fd,F_SETFD,FD_CLOEXEC);
+	  rewind(pidf);
+	  (void) fprintf(pidf,"%d\n",getpid());
+	  (void) fflush(pidf);
+	  (void) ftruncate(fileno(pidf),ftell(pidf));
+
+    fclose(fdppid);
+  }
 
   /*
-   * We need to get the segment named
-   * "5678", created by the server.
+   * We need to get the segment
+   * created by the server.
    */
   key = KEY_SHM_IRSIDE;
 
@@ -239,11 +286,6 @@ static void i2cuser_read_loop(int out_fd) {
       exit(1);
   }
 
-
-
-
-  //i2c_smbus_write_block_data(i2c_fd, REGISTER_PS_PICKED_UP_COUNT, 1, &(resetcount[0])); //Avoid receiving previous values from buffers
-
   for (;;) {
 
     if(count==0) usleep(50000);
@@ -261,13 +303,10 @@ static void i2cuser_read_loop(int out_fd) {
 
       info = i2c_smbus_read_byte_data(i2c_fd, REGISTER_PS_PICKED_UP_INFO);
 
-      //first we have to read the informational byt
-      //if(count32 == count)
-      //{
-        if(info&0x10) state=1;
-        else state=0;
-      //}
+      //first we have to read the informational byte
 
+      if(info&0x10) state=1;
+      else state=0;
 
 
       if(count32<=32)
@@ -284,15 +323,15 @@ static void i2cuser_read_loop(int out_fd) {
         i2c_smbus_read_i2c_block_data(i2c_fd, REGISTER_PS_PICKED_UP_0 + d_count, 32, &(values[d_count]));
       }
 
-      //logprintf(LOG_INFO, "DCOUNT: %ud / COUNT32: %ud / COUNT: %ud",d_count,count32, count);
-      for(i=d_count; i<((d_count+32)>count ? count:d_count+32); i++){
-        //logprintf(LOG_INFO, "&@&@&@&@&@  INDICE1: %d; VAL: %d",i,values[i]);
+      if((d_count+32)>count)
+        count_to_reach = count;
+      else
+        count_to_reach = d_count+32;
+
+      for(i=d_count; i<count_to_reach; i++){
         if(values[i]==0){
           lastTime=lastTime+8160;
         }else{
-          //logprintf(LOG_INFO, "INDICE2: %d",i);
-          //if((i==0) && (d_count==0)) timeValue=200000;
-          //else
           timeValue=lastTime+(unsigned long int)values[i]*32;
           codeBuf[0]= timeValue & 0xFF;
           codeBuf[1]= (timeValue & 0xFF00)>>8;
@@ -325,7 +364,7 @@ static void i2cuser_read_loop(int out_fd) {
     error=0;
     if(count!=0) i2c_smbus_write_block_data(i2c_fd, REGISTER_PS_PICKED_UP_COUNT, 1, &(resetcount[0]));
   }
-  //fclose(f1);
+
   fail:
   _exit(1);
 }
@@ -357,7 +396,7 @@ static lirc_t i2cuser_readdata(lirc_t timeout)
 }
 
 int i2cuser_send(struct ir_remote *remote,struct ir_ncode *code){
-  int length, x=0,i, ret, sent=0, sent_confirmed=0;// lengthI2C=0;
+  int length, x=0,i, ret, sent=0, sent_confirmed=0;
   lirc_t *signals,val=0,pulseState=1;
 
   unsigned char values[34], command = REGISTER;
@@ -367,7 +406,7 @@ int i2cuser_send(struct ir_remote *remote,struct ir_ncode *code){
     return 0;
   }
 
-  length = send_buffer.wptr;//longueur totale
+  length = send_buffer.wptr;//total length
   signals = send_buffer.data;
 
 
@@ -381,7 +420,7 @@ int i2cuser_send(struct ir_remote *remote,struct ir_ncode *code){
     sent_confirmed = sent;
 
     //fill array to send
-    for(i=0;(i<32)&&(x<(sent+length));i++){//parcourir tableau à envoyer
+    for(i=0;(i<32)&&(x<(sent+length));i++){
       if(val==0){
         val = (signals[x]&PULSE_MASK);
       }
@@ -392,12 +431,12 @@ int i2cuser_send(struct ir_remote *remote,struct ir_ncode *code){
       }
 
 
-      if(val>8160){//time out à envoyer
+      if(val>8160){//time out to send
         values[2+i]=0;
         val = val-8160;
         values_init[2]++;
       }else{
-        values[2+i]=val/32;//valeur inférieure a 8160 ms
+        values[2+i]=val/32;//value under 8160 ms
         if((val%32)>16) values[2+i] += 1;
         val=0;
         x++;
@@ -416,7 +455,6 @@ int i2cuser_send(struct ir_remote *remote,struct ir_ncode *code){
 
     i2c_smbus_write_block_data(i2c_fd, values_init[0], values_init[1], &(values_init[2]));
 
-    //logprintf(LOG_INFO, "Send Data");
     if(sent_confirmed>0) sent_confirmed +=1;
     values[0] = REGISTER_PS_TO_EMIT_0 + sent_confirmed;
     i2c_smbus_write_block_data(i2c_fd, values[0], values[1], &(values[2]));

@@ -2126,7 +2126,7 @@ int lirc_identify(int sockfd)
 
 
 
-int lirc_send_key(const char *remote, const char *key)
+int lirc_send_key(const char *sock_path, const char *remote, const char *key)
 {
   int lirc_lircd1;
   char prog[] = "client_send";
@@ -2149,7 +2149,7 @@ int lirc_send_key(const char *remote, const char *key)
 	}
 	
 	addr.sun_family=AF_UNIX;
-    strcpy(addr.sun_path, "/var/run/lirc/lircd1");
+    strcpy(addr.sun_path, sock_path);
 	lirc_lircd1=socket(AF_UNIX,SOCK_STREAM,0);
 	if(lirc_lircd1==-1)
 	{

@@ -99,7 +99,7 @@ const char *lirc_setmode(struct lirc_config *config, const char *mode);
 
 /* send remote key with an other daemon */
 /* socket on /var/run/lirc/lircd */
-int lirc_send_key(const char *remote, const char *key);
+int lirc_send_key(const char *sock_path, const char *remote, const char *key);
 
 
 #ifdef __cplusplus

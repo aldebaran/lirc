@@ -2123,10 +2123,14 @@ int lirc_identify(int sockfd)
 }
 
 
-
-
-
 int lirc_send_key(const char *sock_path, const char *remote, const char *key)
+{
+  return lirc_send_key_with_time(sock_path, remote, key, 0);
+}
+
+
+
+int lirc_send_key_with_time(const char *sock_path, const char *remote, const char *key, int timeMs)
 {
   int lirc_lircd1;
   char prog[] = "client_send";
@@ -2169,10 +2173,28 @@ int lirc_send_key(const char *sock_path, const char *remote, const char *key)
 		return(-1);
 	}
 
+  if (timeMs<=0)
+  {
+    /* send remote key */
+    sprintf(command, "SEND_ONCE %s %s\n", remote, key);
+    (void) lirc_send_command(lirc_lircd1, command, NULL, NULL, &success);
+  }
+  else
+  {
+    /* send START remote key */
+    sprintf(command, "SEND_START %s %s\n", remote, key);
+    (void) lirc_send_command(lirc_lircd1, command, NULL, NULL, &success);
 
-	/* send remote key */
-	sprintf(command, "SEND_ONCE %s %s\n", remote, key);
-	(void) lirc_send_command(lirc_lircd1, command, NULL, NULL, &success);
+    // Sleep timeMs ms
+
+    usleep(timeMs*1000);
+
+
+    /* send STOP remote key */
+    sprintf(command, "SEND_STOP %s %s\n", remote, key);
+    (void) lirc_send_command(lirc_lircd1, command, NULL, NULL, &success);
+
+  }
 
 
   /* deinit */

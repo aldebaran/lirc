@@ -118,14 +118,12 @@ struct hardware hw_i2cuser = {
    pipe and poll it ourself in a separate process. */
 static int i2c_fd = -1;
 /* The device name. */
-char device_name[256];
+char *device_name = "/dev/i2c-head";
 /* PID of the child process. */
 static pid_t child = -1;
 
 /* Hunt for the appropriate i2c device and open it. */
 static int open_i2c_device(void) {
-  int found=0;
-  snprintf(device_name, sizeof device_name, "/dev/i2c-%d", found);
   logprintf(LOG_INFO, "Using i2c device %s", device_name);
   hw.device = device_name;
   return open(device_name, O_RDWR);
@@ -224,7 +222,7 @@ static void i2cuser_read_loop(int out_fd) {
 
   if(fdppid)  // if i2cuser_read_loop is call from an irrecord fork
   {           // write the pid of the child process in /var/run/lirc/
-              // in order to kill the process from naoqi 
+              // in order to kill the process from naoqi
               // if the user cancel the remote record process
 
 	  /* create pid lockfile in /var/run */
@@ -239,7 +237,7 @@ static void i2cuser_read_loop(int out_fd) {
 	  if(flock(fd,LOCK_EX|LOCK_NB)==-1)
 	  {
 		  pid_t otherpid;
-		
+
 		  if(fscanf(pidf,"%d\n",&otherpid)>0)
 		  {
 			  fprintf(stderr,"%s: there seems to already be "
@@ -344,7 +342,7 @@ static void i2cuser_read_loop(int out_fd) {
           }
 
           error++;
-          
+
           if(state==1)state=0;
           else state=1;
         }

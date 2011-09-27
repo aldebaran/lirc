@@ -1037,6 +1037,10 @@ int main(int argc,char **argv)
 
   if(is_raw(&remote))
   {
+  #ifdef PIPE_COM
+    const char msg_end[MAX_BUF_SIZE] =  "#END#Successfully written config file.\0";
+    write(wrfd, msg_end, strlen(msg_end));
+  #endif
     return(EXIT_SUCCESS);
   }
   if(!resethw())

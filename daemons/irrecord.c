@@ -1034,7 +1034,7 @@ int main(int argc,char **argv)
     if(hw.deinit_func) hw.deinit_func();
     #ifdef PIPE_COM
       const char msg_end[MAX_BUF_SIZE] =  "#END#Recording your remote have failed.\0";
-     ABS_BRAKE write(wrfd, msg_end, strlen(msg_end));
+      write(wrfd, msg_end, strlen(msg_end));
     #endif
     exit(EXIT_FAILURE);
   }

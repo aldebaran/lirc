@@ -369,7 +369,7 @@ static void i2cuser_read_loop(int out_fd) {
 
 
 static char *i2cuser_rec(struct ir_remote *remotes) {
-  logprintf(LOG_INFO, "i2cuser_rec");
+  logprintf(LOG_DEBUG, "i2cuser_rec");
   if (!clear_rec_buffer()) return NULL;
   return decode_all(remotes);
 }

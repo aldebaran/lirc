@@ -369,7 +369,6 @@ static void i2cuser_read_loop(int out_fd) {
 
 
 static char *i2cuser_rec(struct ir_remote *remotes) {
-  logprintf(LOG_DEBUG, "i2cuser_rec");
   if (!clear_rec_buffer()) return NULL;
   return decode_all(remotes);
 }
@@ -441,12 +440,10 @@ int i2cuser_send(struct ir_remote *remote,struct ir_ncode *code){
         length--;
         sent++;
       }
-      logprintf(LOG_INFO, "pulse to send=  %d", values[2+i]);
     }
 
     values[1]=i;
 
-    logprintf(LOG_INFO, "x=  %d, sent+length= %d", x,sent+length);
     if(x<(sent+length))
       values_init[3]=values_init[3] | 0x1;
 

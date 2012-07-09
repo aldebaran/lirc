@@ -2136,7 +2136,7 @@ int lirc_send_key_with_time(const char *sock_path, const char *remote, const cha
   char prog[] = "client_send";
   char *lirc_prog1=NULL;
 	char command[50];
-  int success;
+  int success = 0;
 
 	struct sockaddr_un addr;
 

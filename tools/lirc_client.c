@@ -104,8 +104,11 @@ static int lirc_identify(int sockfd);
 static int lirc_send_command(int sockfd, const char *command, char *buf, size_t *buf_len, int *ret_status);
 
 static int lirc_lircd;
+static int send_sk = -1;
 static int lirc_verbose=0;
 static char *lirc_prog=NULL;
+static const char *lirc_prog_send="client_send";
+static const char *send_sock_path="/var/run/lirc/lircd_send";
 static char *lirc_buffer=NULL;
 
 static void lirc_printf(char *format_str, ...)
@@ -126,21 +129,54 @@ static void lirc_perror(const char *s)
 	perror(s);
 }
 
-int lirc_init(char *prog,int verbose)
+int lirc_init_emission()
 {
 	struct sockaddr_un addr;
 
-	/* connect to lircd */
+	/* send socket */
+	if (send_sk != -1)
+		return -ECONNABORTED;
 
-	if(prog==NULL || lirc_prog!=NULL) return(-1);
+	addr.sun_family=AF_UNIX;
+	strcpy(addr.sun_path, send_sock_path);
+
+	send_sk = socket(AF_UNIX,SOCK_STREAM,0);
+	if(send_sk == -1)
+	{
+		lirc_printf("%s: could not open socket\n",lirc_prog_send);
+		lirc_perror(lirc_prog_send);
+		return -EIO;
+	}
+
+	if(connect(send_sk,(struct sockaddr *)&addr,sizeof(addr)) == -1)
+	{
+		lirc_printf("Connect error\n");
+		close(send_sk);
+		send_sk = -1;
+		lirc_printf("%s: could not connect to socket\n",lirc_prog_send);
+		lirc_perror(lirc_prog_send);
+		return -EIO;
+	}
+
+	return 0;
+}
+
+int lirc_init(char *prog, int verbose)
+{
+	struct sockaddr_un addr;
+
+	/*receive socket*/
+	if (prog==NULL || lirc_prog!=NULL) return(-1);
+
 	lirc_prog=strdup(prog);
 	lirc_verbose=verbose;
-	if(lirc_prog==NULL)
+
+	if (lirc_prog==NULL)
 	{
 		lirc_printf("%s: out of memory\n",prog);
-		return(-1);
+		return -ENOMEM;
 	}
-	
+
 	addr.sun_family=AF_UNIX;
 	strcpy(addr.sun_path,LIRCD);
 	lirc_lircd=socket(AF_UNIX,SOCK_STREAM,0);
@@ -150,33 +186,46 @@ int lirc_init(char *prog,int verbose)
 		lirc_perror(lirc_prog);
 		free(lirc_prog);
 		lirc_prog=NULL;
-		return(-1);
+		return -EIO;
 	}
-	if(connect(lirc_lircd,(struct sockaddr *)&addr,sizeof(addr))==-1)
+
+	if (connect(lirc_lircd,(struct sockaddr *)&addr,sizeof(addr))==-1)
 	{
 		close(lirc_lircd);
 		lirc_printf("%s: could not connect to socket\n",lirc_prog);
 		lirc_perror(lirc_prog);
 		free(lirc_prog);
 		lirc_prog=NULL;
-		return(-1);
+		return -EIO;
 	}
+
 	return(lirc_lircd);
+}
+
+int lirc_deinit_emission(void)
+{
+	if (send_sk != -1) {
+		close(send_sk);
+		send_sk = -1;
+	}
+
+	return 0;
 }
 
 int lirc_deinit(void)
 {
-	if(lirc_prog!=NULL)
+	if (lirc_prog!=NULL)
 	{
 		free(lirc_prog);
 		lirc_prog=NULL;
 	}
-	if(lirc_buffer!=NULL)
+	if (lirc_buffer!=NULL)
 	{
 		free(lirc_buffer);
 		lirc_buffer=NULL;
 	}
-	return(close(lirc_lircd));
+
+	return close(lirc_lircd);
 }
 
 static int lirc_readline(char **line,FILE *f)
@@ -2123,88 +2172,35 @@ int lirc_identify(int sockfd)
 }
 
 
-int lirc_send_key(const char *sock_path, const char *remote, const char *key)
+int lirc_send_key(const char *remote, const char *key)
 {
-  return lirc_send_key_with_time(sock_path, remote, key, 0);
+	return lirc_send_key_with_time(remote, key, 0);
 }
 
-
-
-int lirc_send_key_with_time(const char *sock_path, const char *remote, const char *key, int timeMs)
+int lirc_send_key_with_time(const char *remote, const char *key, int timeMs)
 {
-  int lirc_lircd1;
-  char prog[] = "client_send";
-  char *lirc_prog1=NULL;
+
 	char command[50];
-  int success = 0;
+	int success = 0;
+	lirc_printf("%s: %s, %s, %d\n", __func__, remote, key, timeMs);
 
-	struct sockaddr_un addr;
-
-  //*prog = "client_send";
-
-	/* connect to lircd */
-
-	if(prog==NULL || lirc_prog1!=NULL) return(-1);
-	lirc_prog1=strdup(prog);
-	if(lirc_prog1==NULL)
-	{
-		lirc_printf("%s: out of memory\n",prog);
-		return(-1);
+	if (timeMs<=0) {
+		/* send remote key */
+		sprintf(command, "SEND_ONCE %s %s\n", remote, key);
+		(void) lirc_send_command(send_sk, command, NULL, NULL, &success);
 	}
-	
-	addr.sun_family=AF_UNIX;
-    strcpy(addr.sun_path, sock_path);
-	lirc_lircd1=socket(AF_UNIX,SOCK_STREAM,0);
-	if(lirc_lircd1==-1)
-	{
-		lirc_printf("%s: could not open socket\n",lirc_prog1);
-		lirc_perror(lirc_prog1);
-		free(lirc_prog1);
-		lirc_prog1=NULL;
-		return(-1);
-	}
-	if(connect(lirc_lircd1,(struct sockaddr *)&addr,sizeof(addr))==-1)
-	{
-		close(lirc_lircd1);
-		lirc_printf("%s: could not connect to socket\n",lirc_prog1);
-		lirc_perror(lirc_prog1);
-		free(lirc_prog1);
-		lirc_prog1=NULL;
-		return(-1);
+	else {
+		/* send START remote key */
+		sprintf(command, "SEND_START %s %s\n", remote, key);
+		(void) lirc_send_command(send_sk, command, NULL, NULL, &success);
+
+		// Sleep timeMs ms
+		usleep(timeMs*1000);
+
+		/* send STOP remote key */
+		sprintf(command, "SEND_STOP %s %s\n", remote, key);
+		(void) lirc_send_command(send_sk, command, NULL, NULL, &success);
 	}
 
-  if (timeMs<=0)
-  {
-    /* send remote key */
-    sprintf(command, "SEND_ONCE %s %s\n", remote, key);
-    (void) lirc_send_command(lirc_lircd1, command, NULL, NULL, &success);
-  }
-  else
-  {
-    /* send START remote key */
-    sprintf(command, "SEND_START %s %s\n", remote, key);
-    (void) lirc_send_command(lirc_lircd1, command, NULL, NULL, &success);
-
-    // Sleep timeMs ms
-
-    usleep(timeMs*1000);
-
-
-    /* send STOP remote key */
-    sprintf(command, "SEND_STOP %s %s\n", remote, key);
-    (void) lirc_send_command(lirc_lircd1, command, NULL, NULL, &success);
-
-  }
-
-
-  /* deinit */
-	if(lirc_prog1!=NULL)
-	{
-		free(lirc_prog1);
-		lirc_prog1=NULL;
-	}
-
-  close(lirc_lircd1);
-
-  return success;
+	return success;
 }

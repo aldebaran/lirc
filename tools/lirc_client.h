@@ -76,6 +76,9 @@ struct lirc_config_entry
 int lirc_init(char *prog,int verbose);
 int lirc_deinit(void);
 
+int lirc_init_emission(void);
+int lirc_deinit_emission(void);
+
 int lirc_readconfig(char *file,struct lirc_config **config,
 		    int (check)(char *s));
 void lirc_freeconfig(struct lirc_config *config);
@@ -99,11 +102,11 @@ const char *lirc_setmode(struct lirc_config *config, const char *mode);
 
 /* send remote key with an other daemon */
 /* socket on /var/run/lirc/lircd */
-int lirc_send_key(const char *sock_path, const char *remote, const char *key);
+int lirc_send_key(const char *remote, const char *key);
 
 /* Same as lirc_send_key, but the time to send in ms is specified */
 /* if time = 0, send only once */
-int lirc_send_key_with_time(const char *sock_path, const char *remote, const char *key, int timeMs);
+int lirc_send_key_with_time(const char *remote, const char *key, int timeMs);
 
 
 #ifdef __cplusplus

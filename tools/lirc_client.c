@@ -783,14 +783,7 @@ static FILE *lirc_open(const char *file, const char *current_file,
 				    lirc_prog,LIRCRC_ROOT_FILE);
 			lirc_perror(lirc_prog);
 		}
-		else if(fin==NULL)
-		{
-			lirc_printf("%s: could not open config files "
-				    "%s and %s\n",
-				    lirc_prog,filename,LIRCRC_ROOT_FILE);
-			lirc_perror(lirc_prog);
-		}
-		else
+		else if (fin != NULL)
 		{
 			free(filename);
 			filename = strdup(root_file);

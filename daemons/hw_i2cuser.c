@@ -190,21 +190,18 @@ static int i2cuser_deinit(void) {
 
 static void i2cuser_read_loop(int out_fd) {
   unsigned char codeBuf[CODE_SIZE];
-  unsigned long int lastTime = 0, timeValue,error=0;
+  unsigned long int lastTime = 0, timeValue,error=0,timeoutFlag=0;
   unsigned int count=0, state=0, info=0, count32=0, d_count=0;
   unsigned int count_to_reach;
-  int i, ret;
+  int i;
   char resetcount[1];
   resetcount[0] = 0;
-  unsigned int delay_polling = 50000;
-
-  char ch_irSide[2] = "8";
 
   int shmid;
   key_t key;
   char *shm_irSide;
 
-  unsigned char values[128], command = REGISTER;
+  unsigned char values[128];
   alarm(0);
   signal(SIGTERM, SIG_DFL);
   signal(SIGPIPE, SIG_DFL);
@@ -225,39 +222,39 @@ static void i2cuser_read_loop(int out_fd) {
               // in order to kill the process from naoqi
               // if the user cancel the remote record process
 
-	  /* create pid lockfile in /var/run */
-	  if((fd=open(pidfile,O_RDWR|O_CREAT,0644))==-1 ||
-	     (pidf=fdopen(fd,"r+"))==NULL)
-	  {
-		  fprintf(stderr,"%s: can't open or create %s\n",
-			  progname,pidfile);
-		  perror(progname);
-		  exit(EXIT_FAILURE);
-	  }
-	  if(flock(fd,LOCK_EX|LOCK_NB)==-1)
-	  {
-		  pid_t otherpid;
+      /* create pid lockfile in /var/run */
+      if((fd=open(pidfile,O_RDWR|O_CREAT,0644))==-1 ||
+         (pidf=fdopen(fd,"r+"))==NULL)
+      {
+          fprintf(stderr,"%s: can't open or create %s\n",
+              progname,pidfile);
+          perror(progname);
+          exit(EXIT_FAILURE);
+      }
+      if(flock(fd,LOCK_EX|LOCK_NB)==-1)
+      {
+          pid_t otherpid;
 
-		  if(fscanf(pidf,"%d\n",&otherpid)>0)
-		  {
-			  fprintf(stderr,"%s: there seems to already be "
-				  "a lirc child process with pid %d\n",
-				  progname,otherpid);
-			  fprintf(stderr,"%s: otherwise delete stale "
-				  "lockfile %s\n",progname,pidfile);
-		  }
-		  else
-		  {
-			  fprintf(stderr,"%s: invalid %s encountered\n",
-				  progname,pidfile);
-		  }
-		  exit(EXIT_FAILURE);
-	  }
-	  (void) fcntl(fd,F_SETFD,FD_CLOEXEC);
-	  rewind(pidf);
-	  (void) fprintf(pidf,"%d\n",getpid());
-	  (void) fflush(pidf);
-	  (void) ftruncate(fileno(pidf),ftell(pidf));
+          if(fscanf(pidf,"%d\n",&otherpid)>0)
+          {
+              fprintf(stderr,"%s: there seems to already be "
+                  "a lirc child process with pid %d\n",
+                  progname,otherpid);
+              fprintf(stderr,"%s: otherwise delete stale "
+                  "lockfile %s\n",progname,pidfile);
+          }
+          else
+          {
+              fprintf(stderr,"%s: invalid %s encountered\n",
+                  progname,pidfile);
+          }
+          exit(EXIT_FAILURE);
+      }
+      (void) fcntl(fd,F_SETFD,FD_CLOEXEC);
+      rewind(pidf);
+      (void) fprintf(pidf,"%d\n",getpid());
+      (void) fflush(pidf);
+      (void) ftruncate(fileno(pidf),ftell(pidf));
 
     fclose(fdppid);
   }
@@ -286,26 +283,24 @@ static void i2cuser_read_loop(int out_fd) {
 
   for (;;) {
 
-    if(count==0) usleep(50000);
-    else usleep(10000);
-
     count = i2c_smbus_read_byte_data(i2c_fd, REGISTER_PS_PICKED_UP_COUNT);
     count32=count;
     d_count=0;
 
     lastTime=0;
 
+    if(count==0) usleep(20000);
+
+    if(count!=0){
+        info = i2c_smbus_read_byte_data(i2c_fd, REGISTER_PS_PICKED_UP_INFO); //first we have to read the informational byte
+
+        if(info&0x10) state=1;
+        else state=0;
+    }
+
     for (;;) {
 
       if(count32==0)break;
-
-      info = i2c_smbus_read_byte_data(i2c_fd, REGISTER_PS_PICKED_UP_INFO);
-
-      //first we have to read the informational byte
-
-      if(info&0x10) state=1;
-      else state=0;
-
 
       if(count32<=32)
       {
@@ -328,13 +323,19 @@ static void i2cuser_read_loop(int out_fd) {
 
       for(i=d_count; i<count_to_reach; i++){
         if(values[i]==0){
-          lastTime=lastTime+8160;
+          timeoutFlag=1;
+        }else if(timeoutFlag){
+          lastTime=816.0*values[i];
+          timeoutFlag=0;
         }else{
-          timeValue=lastTime+(unsigned long int)values[i]*32;
+          timeValue=lastTime+(unsigned long int)(((float)values[i])*3.2);
+          lastTime=0;
+
           codeBuf[0]= timeValue & 0xFF;
           codeBuf[1]= (timeValue & 0xFF00)>>8;
           codeBuf[2]= (timeValue & 0xFF0000)>>16;
           codeBuf[3]= state;//to save if it is a pulse or a duration
+
           if (write(out_fd, codeBuf, CODE_SIZE) != CODE_SIZE) {//write on pipe
             logprintf(LOG_ERR, "Write to i2cuser pipe failed: %s",
                       strerror(errno));

@@ -191,17 +191,19 @@ static int i2cuser_deinit(void) {
 static void i2cuser_read_loop(int out_fd) {
   unsigned char codeBuf[CODE_SIZE];
   unsigned long int lastTime = 0, timeValue,error=0,timeoutFlag=0;
-  unsigned int count=0, state=0, info=0, count32=0, d_count=0;
-  unsigned int count_to_reach;
+  unsigned int count=0, state=0, info=0;
   int i;
   char resetcount[1];
+  int j;
+  unsigned char byteReceived[128];
+  uInt8 crc;
+
   resetcount[0] = 0;
 
   int shmid;
   key_t key;
   char *shm_irSide;
 
-  unsigned char values[128];
   alarm(0);
   signal(SIGTERM, SIG_DFL);
   signal(SIGPIPE, SIG_DFL);
@@ -283,85 +285,67 @@ static void i2cuser_read_loop(int out_fd) {
 
   for (;;) {
 
-    count = i2c_smbus_read_byte_data(i2c_fd, REGISTER_PS_PICKED_UP_COUNT);
-    count32=count;
-    d_count=0;
+     count = i2c_smbus_read_byte_data(i2c_fd, REGISTER_PS_PICKED_UP_COUNT);
 
-    lastTime=0;
+     if(count!=0){
+         info = i2c_smbus_read_byte_data(i2c_fd, REGISTER_PS_PICKED_UP_INFO); //first we have to read the informational byte
 
-    if(count==0) usleep(20000);
+         if(info&0x10) state=1;
+         else state=0;
 
-    if(count!=0){
-        info = i2c_smbus_read_byte_data(i2c_fd, REGISTER_PS_PICKED_UP_INFO); //first we have to read the informational byte
+         for(j=0;j<count;j+=32){
+             if((count-j)<=32){
+                i2c_smbus_read_i2c_block_data(i2c_fd, REGISTER_PS_PICKED_UP_0 + j, count-j, &(byteReceived[j]));
+             }else{
+                i2c_smbus_read_i2c_block_data(i2c_fd, REGISTER_PS_PICKED_UP_0 + j,32, &(byteReceived[j]));
+             }
+         }
 
-        if(info&0x10) state=1;
-        else state=0;
-    }
+         i2c_smbus_write_block_data(i2c_fd, REGISTER_PS_PICKED_UP_COUNT, 1, &(resetcount[0]));
 
-    for (;;) {
+         //calculate crc
+         crc=0;
+         for(j=0;j<(count-1);j++){
+            crc = crc ^ byteReceived[j];
+         }
 
-      if(count32==0)break;
+         if(crc==byteReceived[count-1]){
+            //if crc correct then save pulses
+            timeoutFlag=0;
+            error=0;
+             for(i=0; i<(count-1); i++){
+               if(byteReceived[i]==0){
+                 timeoutFlag=1;
+               }else if(timeoutFlag){
+                 lastTime=816.0*byteReceived[i];
+                 timeoutFlag=0;
+               }else{
+                 timeValue=lastTime+(unsigned long int)(((float)byteReceived[i])*3.2);
+                 lastTime=0;
 
-      if(count32<=32)
-      {
-        i2c_smbus_read_i2c_block_data(i2c_fd, REGISTER_PS_PICKED_UP_0 + d_count, count32, &(values[d_count]));
+                 codeBuf[0]= timeValue & 0xFF;
+                 codeBuf[1]= (timeValue & 0xFF00)>>8;
+                 codeBuf[2]= (timeValue & 0xFF0000)>>16;
+                 codeBuf[3]= state;//to save if it is a pulse or a duration
 
-        if((info!=255) && (values[0]!=0)){  //
-          *shm_irSide = info>>5;
-          info=255;
-        }
-      }
-      else
-      {
-        i2c_smbus_read_i2c_block_data(i2c_fd, REGISTER_PS_PICKED_UP_0 + d_count, 32, &(values[d_count]));
-      }
+                 if (write(out_fd, codeBuf, CODE_SIZE) != CODE_SIZE) {//write on pipe
+                   logprintf(LOG_ERR, "Write to i2cuser pipe failed: %s",
+                             strerror(errno));
+                   goto fail;
+                 }
 
-      if((d_count+32)>count)
-        count_to_reach = count;
-      else
-        count_to_reach = d_count+32;
+                 error++;
 
-      for(i=d_count; i<count_to_reach; i++){
-        if(values[i]==0){
-          timeoutFlag=1;
-        }else if(timeoutFlag){
-          lastTime=816.0*values[i];
-          timeoutFlag=0;
-        }else{
-          timeValue=lastTime+(unsigned long int)(((float)values[i])*3.2);
-          lastTime=0;
-
-          codeBuf[0]= timeValue & 0xFF;
-          codeBuf[1]= (timeValue & 0xFF00)>>8;
-          codeBuf[2]= (timeValue & 0xFF0000)>>16;
-          codeBuf[3]= state;//to save if it is a pulse or a duration
-
-          if (write(out_fd, codeBuf, CODE_SIZE) != CODE_SIZE) {//write on pipe
-            logprintf(LOG_ERR, "Write to i2cuser pipe failed: %s",
-                      strerror(errno));
-            goto fail;
-          }
-
-          error++;
-
-          if(state==1)state=0;
-          else state=1;
-        }
-        if(error>128)break;
-      }
-
-      if(error>128)break;
-      if(count32<=32)
-      {
-        count32=0;
-        break;
-      }
-      else count32 -=32;
-      d_count = count-count32;
-
-    }
-    error=0;
-    if(count!=0) i2c_smbus_write_block_data(i2c_fd, REGISTER_PS_PICKED_UP_COUNT, 1, &(resetcount[0]));
+                 if(state==1)state=0;
+                 else state=1;
+               }
+               if(error>128)break;
+             }
+         }
+            usleep(10000);
+     }else{
+         usleep(20000);
+     }
   }
 
   fail:
@@ -398,13 +382,15 @@ int i2cuser_send(struct ir_remote *remote,struct ir_ncode *code){
   lirc_t *signals,val=0;
   unsigned char informationalFrame[2], frameToSend[118], sizeFrameToSend=0;
   int indexFrameToSend=0,informationalByte=0x10;
+  uInt8 crc=0;
 
   if(!init_send(remote,code)) {
     return 0;
   }
 
   length = send_buffer.wptr;//total length
-  signals = send_buffer.data;;
+  signals = send_buffer.data;
+
 
   //fill buffer
   for(i=0;i<length;i++){
@@ -425,10 +411,22 @@ int i2cuser_send(struct ir_remote *remote,struct ir_ncode *code){
     }
   }
 
+  for(i=0;i<sizeFrameToSend;i++){
+      crc = crc ^ frameToSend[i];
+  }
+
+  frameToSend[indexFrameToSend] = crc;
+  indexFrameToSend+=1;
+  sizeFrameToSend+=1;
+
   informationalFrame[0]=sizeFrameToSend;
   informationalFrame[1]=informationalByte;
 
   i2c_smbus_write_block_data(i2c_fd, REGISTER_PS_TO_EMIT_COUNT, 2, informationalFrame);
+
+  for(i=0;i<sizeFrameToSend;i++){
+    logprintf(LOG_ERR, "data=%d\n",frameToSend[i]);
+  }
 
   for(i=0;i<sizeFrameToSend;i+=32){
       if((sizeFrameToSend-i)>32)

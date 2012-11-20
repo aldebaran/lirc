@@ -394,68 +394,48 @@ static lirc_t i2cuser_readdata(lirc_t timeout)
 }
 
 int i2cuser_send(struct ir_remote *remote,struct ir_ncode *code){
-  int length, x=0,i, ret, sent=0, sent_confirmed=0;
-  lirc_t *signals,val=0,pulseState=1;
-
-  unsigned char values[34], command = REGISTER;
-  unsigned char values_init[5];
+  int length,i;
+  lirc_t *signals,val=0;
+  unsigned char informationalFrame[2], frameToSend[118], sizeFrameToSend=0;
+  int indexFrameToSend=0,informationalByte=0x10;
 
   if(!init_send(remote,code)) {
     return 0;
   }
 
   length = send_buffer.wptr;//total length
-  signals = send_buffer.data;
+  signals = send_buffer.data;;
 
+  //fill buffer
+  for(i=0;i<length;i++){
+    val = (signals[i]&PULSE_MASK);
 
-  values_init[0] = REGISTER_PS_TO_EMIT_COUNT;
-  values_init[1] = 2;
-  values_init[2] = length;
-
-
-  for(;;){
-
-    sent_confirmed = sent;
-
-    //fill array to send
-    for(i=0;(i<32)&&(x<(sent+length));i++){
-      if(val==0){
-        val = (signals[x]&PULSE_MASK);
-      }
-
-      if(i==0){
-            if(pulseState) values_init[3]=0x10;//information byte
-            else values_init[3]=0x00;
-      }
-
-
-      if(val>8160){//time out to send
-        values[2+i]=0;
-        val = val-8160;
-        values_init[2]++;
-      }else{
-        values[2+i]=val/32;//value under 8160 ms
-        if((val%32)>16) values[2+i] += 1;
-        val=0;
-        x++;
-        length--;
-        sent++;
-      }
+    if(val>816){
+        frameToSend[indexFrameToSend]=0;
+        indexFrameToSend+=1;
+        frameToSend[indexFrameToSend]=val/816;
+        indexFrameToSend+=1;
+        frameToSend[indexFrameToSend]=(val%816)/3.2;
+        indexFrameToSend+=1;
+        sizeFrameToSend+=3;
+    }else{
+        frameToSend[indexFrameToSend]=(int)(((float)val)/3.2);
+        indexFrameToSend+=1;
+        sizeFrameToSend+=1;
     }
-
-    values[1]=i;
-
-    if(x<(sent+length))
-      values_init[3]=values_init[3] | 0x1;
-
-
-    i2c_smbus_write_block_data(i2c_fd, values_init[0], values_init[1], &(values_init[2]));
-
-    if(sent_confirmed>0) sent_confirmed +=1;
-    values[0] = REGISTER_PS_TO_EMIT_0 + sent_confirmed;
-    i2c_smbus_write_block_data(i2c_fd, values[0], values[1], &(values[2]));
-
-    if(x>=(sent+length)) break;
   }
+
+  informationalFrame[0]=sizeFrameToSend;
+  informationalFrame[1]=informationalByte;
+
+  i2c_smbus_write_block_data(i2c_fd, REGISTER_PS_TO_EMIT_COUNT, 2, informationalFrame);
+
+  for(i=0;i<sizeFrameToSend;i+=32){
+      if((sizeFrameToSend-i)>32)
+        i2c_smbus_write_block_data(i2c_fd, REGISTER_PS_TO_EMIT_0 + i, 32, &(frameToSend[i]));
+      else
+        i2c_smbus_write_block_data(i2c_fd, REGISTER_PS_TO_EMIT_0 + i, sizeFrameToSend-i, &(frameToSend[i]));
+  }
+
   return 1;
 }
